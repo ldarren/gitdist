@@ -136,6 +136,6 @@ void ObjectV8::set(const char *key, const char *value){
 
 Handle<Object> ObjectV8::toJSObject() const{
     Isolate *iso = Isolate::GetCurrent();
-    HandleScope scope(iso);
-    return Local<Object>::New(iso,_obj);
+    EscapableHandleScope scope(iso);
+    return scope.Escape(Local<Object>::New(iso,_obj));
 }

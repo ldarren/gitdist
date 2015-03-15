@@ -15,14 +15,16 @@ struct opts {
     const char *dir;
 };
 
-Handle<String> LastErrMsg(){
+void LastErr(const FunctionCallbackInfo<Value>& args){
     Isolate *iso = Isolate::GetCurrent();
-    EscapableHandleScope scope(iso);
+    HandleScope scope(iso);
 
-    return scope.Escape(String::NewFromUtf8(iso, giterr_last()->message));
-}
-int LastErrCode(){
-    return giterr_last()->klass;
+    ObjectV8 ret;
+    const git_error *err = giterr_last();
+    ret.set("message", err->message);
+    ret.set("klass", err->klass);
+
+    args.GetReturnValue().Set(ret.toJSObject());
 }
 
 void Init(const FunctionCallbackInfo<Value>& args){
@@ -56,8 +58,7 @@ void Init(const FunctionCallbackInfo<Value>& args){
 
 void setup(Handle<Object> exports){
     NODE_SET_METHOD(exports, "init", Init);
-    NODE_SET_METHOD(exports, "lastErrorMsg", LastErrMsg);
-    NODE_SET_METHOD(exports, "lastErrorCode", LastErrCode);
+    NODE_SET_METHOD(exports, "lastError", LastErr);
 }
 
 NODE_MODULE(gitdist, setup)
