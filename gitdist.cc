@@ -15,14 +15,24 @@ struct opts {
     const char *dir;
 };
 
-void Method(const FunctionCallbackInfo<Value>& args){
+Handle<String> LastErrMsg(){
+    Isolate *iso = Isolate::GetCurrent();
+    EscapableHandleScope scope(iso);
+
+    return scope.Escape(String::NewFromUtf8(iso, giterr_last()->message));
+}
+int LastErrCode(){
+    return giterr_last()->klass;
+}
+
+void Init(const FunctionCallbackInfo<Value>& args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
     ObjectV8 cfg(Handle<Object>::Cast(args[0]));
 
     git_repository *repo = NULL;
-    String::Utf8Value utf(cfg.get("dir", "./repo"));
+    String::Utf8Value utf(cfg.get("dir", ""));
     struct opts o = { 1, cfg.get("quiet", 0), cfg.get("bare", 0), 0, GIT_REPOSITORY_INIT_SHARED_UMASK, 0, 0, *utf };
     git_threads_init();
 
@@ -45,7 +55,9 @@ void Method(const FunctionCallbackInfo<Value>& args){
 }
 
 void setup(Handle<Object> exports){
-    NODE_SET_METHOD(exports, "init", Method);
+    NODE_SET_METHOD(exports, "init", Init);
+    NODE_SET_METHOD(exports, "lastErrorMsg", LastErrMsg);
+    NODE_SET_METHOD(exports, "lastErrorCode", LastErrCode);
 }
 
 NODE_MODULE(gitdist, setup)
