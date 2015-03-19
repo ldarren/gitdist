@@ -15,7 +15,6 @@ ObjectV8::ObjectV8(){
 }
 ObjectV8::ObjectV8(Handle<Object> obj){
     Isolate *iso = Isolate::GetCurrent();
-printf("IsObject: %d\n",obj->IsObject());
     if (obj->IsObject()) _obj.Reset(iso, obj);
     else _obj.Reset(iso, Object::New(iso));
 }

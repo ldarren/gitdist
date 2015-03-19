@@ -1,6 +1,7 @@
 #include <node.h>
 #include <git2.h>
 #include "./object_v8.h"
+#include "./repository_v8.h"
 #include <string.h>
 
 using namespace v8;
@@ -67,16 +68,23 @@ InitCfg::InitCfg(const char *d, int b, const char *s, const char *g, const char 
     }
 }
 
-void LastErr(const FunctionCallbackInfo<Value>& args){
+Handle<Object> Error(int id){
     Isolate *iso = Isolate::GetCurrent();
-    HandleScope scope(iso);
+    EscapableHandleScope scope(iso);
 
     ObjectV8 ret;
+    ret.set("id", id);
     const git_error *err = giterr_last();
-    ret.set("message", err->message);
-    ret.set("klass", err->klass);
+    if (err){
+        ret.set("message", err->message);
+        ret.set("klass", err->klass);
+    }else{
+        ret.set("message", "");
+        ret.set("klass", 0);
+    }
 
-    args.GetReturnValue().Set(ret.toJSObject());
+    Local<Object> o= ret.toJSObject();
+    return scope.Escape(o);
 }
 
 void Init(const FunctionCallbackInfo<Value> &args){
@@ -85,8 +93,28 @@ void Init(const FunctionCallbackInfo<Value> &args){
 
     git_threads_init();
 
-    String::Utf8Value dir(args[0]->ToString());
-    ObjectV8 o(Handle<Object>::Cast(args[1]));
+    Local<String> aDir;
+    Local<Value> aOpts;
+    Local<Function> cb;
+
+    switch(args.Length()){
+    case 2:
+        aDir = args[0]->ToString();
+        aOpts = Undefined(iso);
+        cb = Local<Function>::Cast(args[1]);
+        break;
+    case 3:
+        aDir = args[0]->ToString();
+        aOpts = args[1];
+        cb = Local<Function>::Cast(args[2]);
+        break;
+    default:
+        iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
+        return;
+    }
+    String::Utf8Value dir(aDir);
+    ObjectV8 o(Local<Object>::Cast(aOpts));
+
     String::Utf8Value shared(o.get("shared", ""));
     String::Utf8Value gitdir(o.get("gitdir", ""));
     String::Utf8Value templ(o.get("template", ""));
@@ -101,21 +129,24 @@ void Init(const FunctionCallbackInfo<Value> &args){
     git_repository *repo = NULL;
     int error = 0;
 
-printf("no_options: %d, workdir: %s, dir: %s\n", cfg.no_options, cfg.opts.workdir_path, cfg.dir);
     if (cfg.no_options){
-printf("simple init\n");
         error = git_repository_init(&repo, cfg.dir, cfg.bare);
     }else{
         error = git_repository_init_ext(&repo, cfg.dir, &(cfg.opts));
     }
 
     if (error){
-        args.GetReturnValue().Set(Number::New(iso, error));
+        const unsigned argc = 1;
+        Local<Value> argv[argc] = { Error(error) };
+        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
         return;
     }
 
+    const unsigned argc = 2;
+    Local<Value> argv[argc] = { Null(iso), repo_create(repo) };
+    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+
     git_threads_shutdown();
-    args.GetReturnValue().Set(Number::New(iso, error));
 }
 
 void Open(const FunctionCallbackInfo<Value>& args){
@@ -125,9 +156,6 @@ void Clone(const FunctionCallbackInfo<Value>& args){
 }
 
 void Free(const FunctionCallbackInfo<Value>& args){
-    git_threads_init();
-    //git_repository_free(repo);
-    git_threads_shutdown();
 }
 
 void setup(Handle<Object> exports){
@@ -135,7 +163,6 @@ void setup(Handle<Object> exports){
     NODE_SET_METHOD(exports, "clone", Clone);
     NODE_SET_METHOD(exports, "open", Open);
     NODE_SET_METHOD(exports, "free", Free);
-    NODE_SET_METHOD(exports, "lastError", LastErr);
 }
 
 NODE_MODULE(gitdist, setup)
