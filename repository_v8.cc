@@ -42,10 +42,10 @@ void repo_remove(const FunctionCallbackInfo<Value>& args){
         args.GetReturnValue().Set(Number::New(iso, 1));
         return;
     }
-    git_threads_init();
+    git_libgit2_init();
     git_repository_free(static_cast<git_repository*>(ptr->Value()));
     r->DeleteHiddenValue(key);
-    git_threads_shutdown();
+    git_libgit2_shutdown();
 
     args.GetReturnValue().Set(Number::New(iso, 0));
 }

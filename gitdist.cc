@@ -6,6 +6,15 @@
 
 using namespace v8;
 
+#ifdef UNUSED
+#elif defined(__GNUC__)
+# define UNUSED(x) UNUSED_ ## x __attribute__((unused))
+#elif defined(__LCLINT__)
+# define UNUSED(x) /*@unused@*/ x
+#else
+# define UNUSED(x) x
+#endif
+
 Handle<Object> Error(int id){
     Isolate *iso = Isolate::GetCurrent();
     EscapableHandleScope scope(iso);
@@ -94,7 +103,7 @@ void Init(const FunctionCallbackInfo<Value> &args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
-    git_threads_init();
+    git_libgit2_init();
 
     Local<String> aDir;
     Local<Value> aOpts;
@@ -151,7 +160,7 @@ void Init(const FunctionCallbackInfo<Value> &args){
     Local<Value> argv[argc] = { Null(iso), repo_create(repo) };
     cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
 
-    git_threads_shutdown();
+    git_libgit2_shutdown();
 }
 
 struct OpenCfg{
@@ -178,7 +187,7 @@ void Open(const FunctionCallbackInfo<Value>& args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
-    git_threads_init();
+    git_libgit2_init();
 
     Local<String> aDir;
     Local<Value> aOpts;
@@ -232,16 +241,164 @@ void Open(const FunctionCallbackInfo<Value>& args){
     Local<Value> argv[argc] = { Null(iso), repo_create(repo) };
     cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
 
-    git_threads_shutdown();
+    git_libgit2_shutdown();
+}
+
+int cred_acquire_cb(git_cred **out,
+        const char * UNUSED(url),
+        const char * UNUSED(username_from_url),
+        unsigned int UNUSED(allowed_types),
+        void * UNUSED(payload))
+{
+    char username[128] = {0};
+    char password[128] = {0};
+
+    printf("Username: ");
+    scanf("%s", username);
+
+    /* Yup. Right there on your terminal. Careful where you copy/paste output. */
+    printf("Password: ");
+    scanf("%s", password);
+
+    return git_cred_userpass_plaintext_new(out, username, password);
+}
+
+typedef struct progress_data {
+    git_transfer_progress fetch_progress;
+    size_t completed_steps;
+    size_t total_steps;
+    const char *path;
+} progress_data;
+
+static void print_progress(const progress_data *pd)
+{
+    int network_percent = pd->fetch_progress.total_objects > 0 ?
+        (100*pd->fetch_progress.received_objects) / pd->fetch_progress.total_objects :
+        0;
+    int index_percent = pd->fetch_progress.total_objects > 0 ?
+        (100*pd->fetch_progress.indexed_objects) / pd->fetch_progress.total_objects :
+        0;
+
+    int checkout_percent = pd->total_steps > 0
+        ? (100 * pd->completed_steps) / pd->total_steps
+        : 0;
+    int kbytes = pd->fetch_progress.received_bytes / 1024;
+
+    if (pd->fetch_progress.total_objects &&
+        pd->fetch_progress.received_objects == pd->fetch_progress.total_objects) {
+        printf("Resolving deltas %d/%d\r",
+               pd->fetch_progress.indexed_deltas,
+               pd->fetch_progress.total_deltas);
+    } else {
+        printf("net %3d%% (%4d kb, %5d/%5d)  /  idx %3d%% (%5d/%5d)  /  chk %3d%% (%4zu/%4zu) %s\n",
+           network_percent, kbytes,
+           pd->fetch_progress.received_objects, pd->fetch_progress.total_objects,
+           index_percent, pd->fetch_progress.indexed_objects, pd->fetch_progress.total_objects,
+           checkout_percent,
+           pd->completed_steps, pd->total_steps,
+           pd->path);
+    }
+}
+
+static int fetch_progress(const git_transfer_progress *stats, void *payload)
+{
+    progress_data *pd = (progress_data*)payload;
+    pd->fetch_progress = *stats;
+    print_progress(pd);
+    return 0;
+}
+static void checkout_progress(const char *path, size_t cur, size_t tot, void *payload)
+{
+    progress_data *pd = (progress_data*)payload;
+    pd->completed_steps = cur;
+    pd->total_steps = tot;
+    pd->path = path;
+    print_progress(pd);
+}
+
+struct CloneCfg{
+    const char *url;
+    const char *dir;
+    progress_data pd;
+    git_checkout_options checkout_opts;
+    git_clone_options clone_opts;
+
+    CloneCfg(const char*, const char*, int);
+};
+
+CloneCfg::CloneCfg(const char *u, const char *d, int f)
+    :url(u), dir(d), pd({{0}})
+{
+    git_clone_init_options(&clone_opts, GIT_CLONE_OPTIONS_VERSION);
+    git_checkout_init_options(&checkout_opts, GIT_CHECKOUT_OPTIONS_VERSION);
+
+    checkout_opts.checkout_strategy = f ? GIT_CHECKOUT_FORCE : GIT_CHECKOUT_SAFE;
+    checkout_opts.progress_cb = checkout_progress;
+    checkout_opts.progress_payload = &pd;
+    clone_opts.checkout_opts = checkout_opts;
+    clone_opts.remote_callbacks.transfer_progress = &fetch_progress;
+    clone_opts.remote_callbacks.credentials = cred_acquire_cb;
+    clone_opts.remote_callbacks.payload = &pd;
 }
 
 void Clone(const FunctionCallbackInfo<Value>& args){
+    Isolate *iso = Isolate::GetCurrent();
+    HandleScope scope(iso);
+
+    git_libgit2_init();
+
+    Local<String> aUrl;
+    Local<String> aDir;
+    Local<Value> aOpts;
+    Local<Function> cb;
+
+    switch(args.Length()){
+    case 3:
+        aUrl = args[0]->ToString();
+        aDir = args[1]->ToString();
+        aOpts = Undefined(iso);
+        cb = Local<Function>::Cast(args[2]);
+        break;
+    case 4:
+        aUrl = args[0]->ToString();
+        aDir = args[1]->ToString();
+        aOpts = args[2];
+        cb = Local<Function>::Cast(args[3]);
+        break;
+    default:
+        iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
+        return;
+    }
+    String::Utf8Value dir(aDir);
+    String::Utf8Value url(aUrl);
+    ObjectV8 o(Local<Object>::Cast(aOpts));
+
+    CloneCfg cfg(
+        *url,
+        *dir,
+        o.get("force", 0)
+    );
+    git_repository *repo = NULL;
+    int error = git_clone(&repo, cfg.url, cfg.dir, &(cfg.clone_opts));
+
+    if (error){
+        const unsigned argc = 1;
+        Local<Value> argv[argc] = { Error(error) };
+        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+        return;
+    }
+
+    const unsigned argc = 2;
+    Local<Value> argv[argc] = { Null(iso), repo_create(repo) };
+    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+
+    git_libgit2_shutdown();
 }
 
 void setup(Handle<Object> exports){
     NODE_SET_METHOD(exports, "init", Init);
-    NODE_SET_METHOD(exports, "clone", Clone);
     NODE_SET_METHOD(exports, "open", Open);
+    NODE_SET_METHOD(exports, "clone", Clone);
 }
 
 NODE_MODULE(gitdist, setup)
