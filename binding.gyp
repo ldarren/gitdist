@@ -8,13 +8,19 @@
       ],
       "link_settings": {
           "libraries":[
-            "/home/ubuntu/libgit2-0.22.1/build/libgit2.a"
+            "/home/ubuntu/libgit2-0.22.1/build_a/libgit2.a",
+            "-lssh2",
+            "-lssl",
+            "-lz",
+            "-lcrypto",
+            "-lrt",
+            "-lpthread",
+            "-lc",
+            "-ldl",
+            "-lgcrypt",
+            "-lgpg-error"
           ]
-      },
-      "ldflags": [
-        "-lssh2",
-        "-lssl"
-      ]
+       }
     }
   ]
 }
