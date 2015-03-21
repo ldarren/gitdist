@@ -245,30 +245,31 @@ void Open(const FunctionCallbackInfo<Value>& args){
 }
 
 int cred_acquire_cb(git_cred **out,
-        const char * UNUSED(url),
-        const char * UNUSED(username_from_url),
+        const char * url,
+        const char * username_from_url,
         unsigned int allowed_types,
         void * UNUSED(payload))
 {
-    char username[128] = {0};
-    char password[128] = {0};
-printf("allowed_types: %d\n",allowed_types);
-printf("GIT_CREDTYPE_USERPASS_PLAINTEXT: %d\n",allowed_types & GIT_CREDTYPE_USERPASS_PLAINTEXT);
-printf("GIT_CREDTYPE_SSH_KEY: %d\n",allowed_types & GIT_CREDTYPE_SSH_KEY);
-printf("GIT_CREDTYPE_SSH_CUSTOM: %d\n",allowed_types & GIT_CREDTYPE_SSH_CUSTOM);
-printf("GIT_CREDTYPE_DEFAULT: %d\n",allowed_types & GIT_CREDTYPE_DEFAULT);
-printf("GIT_CREDTYPE_SSH_INTERACTIVE: %d\n",allowed_types & GIT_CREDTYPE_SSH_INTERACTIVE);
-printf("GIT_CREDTYPE_USERNAME: %d\n",allowed_types & GIT_CREDTYPE_USERNAME);
-
-    printf("Username: ");
-    scanf("%s", username);
-
-    /* Yup. Right there on your terminal. Careful where you copy/paste output. */
-    printf("Password: ");
-    scanf("%s", password);
-//git_cred_ssh_custom_new
-//git_cred_ssh_key_new
-    return git_cred_userpass_plaintext_new(out, username, password);
+    if (allowed_types & GIT_CREDTYPE_USERPASS_PLAINTEXT){
+        char username[128] = {0};
+        char password[128] = {0};
+        printf("Username for %s: [%s]",url,username_from_url);
+        scanf("%s", username);
+        /* Yup. Right there on your terminal. Careful where you copy/paste output. */
+        printf("Password: ");
+        scanf("%s", password);
+        return git_cred_userpass_plaintext_new(out, username, password);
+    }else if (allowed_types & GIT_CREDTYPE_SSH_KEY){
+        return git_cred_ssh_key_new(out, username_from_url, "/home/ubuntu/.ssh/id_rsa.pub", "/home/ubuntu/.ssh/id_rsa", "darren<3snow");
+    }else if (allowed_types & GIT_CREDTYPE_SSH_CUSTOM){
+        //return git_cred_ssh_custom_new();
+    }else if (allowed_types & GIT_CREDTYPE_DEFAULT){
+        //return git_cred_default_new();
+    }else if (allowed_types & GIT_CREDTYPE_SSH_INTERACTIVE){
+        //return git_cred_ssh_interactive_new();
+    }else if (allowed_types & GIT_CREDTYPE_USERNAME){
+        //return git_cred_username_new();
+    }
 }
 
 typedef struct progress_data {
