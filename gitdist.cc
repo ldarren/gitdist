@@ -279,25 +279,15 @@ typedef struct progress_data {
     const char *path;
 } progress_data;
 
-static void print_progress(const progress_data *pd)
-{
-    int network_percent = pd->fetch_progress.total_objects > 0 ?
-        (100*pd->fetch_progress.received_objects) / pd->fetch_progress.total_objects :
-        0;
-    int index_percent = pd->fetch_progress.total_objects > 0 ?
-        (100*pd->fetch_progress.indexed_objects) / pd->fetch_progress.total_objects :
-        0;
+static void print_progress(const progress_data *pd) {
+    int network_percent = pd->fetch_progress.total_objects > 0 ?  (100*pd->fetch_progress.received_objects) / pd->fetch_progress.total_objects : 0;
+    int index_percent = pd->fetch_progress.total_objects > 0 ?  (100*pd->fetch_progress.indexed_objects) / pd->fetch_progress.total_objects : 0;
 
-    int checkout_percent = pd->total_steps > 0
-        ? (100 * pd->completed_steps) / pd->total_steps
-        : 0;
+    int checkout_percent = pd->total_steps > 0 ? (100 * pd->completed_steps) / pd->total_steps : 0;
     int kbytes = pd->fetch_progress.received_bytes / 1024;
 
-    if (pd->fetch_progress.total_objects &&
-        pd->fetch_progress.received_objects == pd->fetch_progress.total_objects) {
-        printf("Resolving deltas %d/%d\r",
-               pd->fetch_progress.indexed_deltas,
-               pd->fetch_progress.total_deltas);
+    if (pd->fetch_progress.total_objects && pd->fetch_progress.received_objects == pd->fetch_progress.total_objects) {
+        printf("Resolving deltas %d/%d\r", pd->fetch_progress.indexed_deltas, pd->fetch_progress.total_deltas);
     } else {
         printf("net %3d%% (%4d kb, %5d/%5d)  /  idx %3d%% (%5d/%5d)  /  chk %3d%% (%4zu/%4zu) %s\n",
            network_percent, kbytes,
@@ -309,15 +299,13 @@ static void print_progress(const progress_data *pd)
     }
 }
 
-static int fetch_progress(const git_transfer_progress *stats, void *payload)
-{
+static int fetch_progress(const git_transfer_progress *stats, void *payload) {
     progress_data *pd = (progress_data*)payload;
     pd->fetch_progress = *stats;
     print_progress(pd);
     return 0;
 }
-static void checkout_progress(const char *path, size_t cur, size_t tot, void *payload)
-{
+static void checkout_progress(const char *path, size_t cur, size_t tot, void *payload) {
     progress_data *pd = (progress_data*)payload;
     pd->completed_steps = cur;
     pd->total_steps = tot;
@@ -341,8 +329,8 @@ CloneCfg::CloneCfg(const char *u, const char *d, int f)
     git_clone_init_options(&clone_opts, GIT_CLONE_OPTIONS_VERSION);
     git_checkout_init_options(&checkout_opts, GIT_CHECKOUT_OPTIONS_VERSION);
 
-    checkout_opts.checkout_strategy = f ? GIT_CHECKOUT_FORCE : GIT_CHECKOUT_SAFE;
-    checkout_opts.progress_cb = checkout_progress;
+    checkout_opts.checkout_strategy = f ? GIT_CHECKOUT_FORCE : GIT_CHECKOUT_SAFE_CREATE;
+    checkout_opts.progress_cb = &checkout_progress;
     checkout_opts.progress_payload = &pd;
     clone_opts.checkout_opts = checkout_opts;
     clone_opts.remote_callbacks.transfer_progress = &fetch_progress;
