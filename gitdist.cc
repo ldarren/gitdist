@@ -1,38 +1,11 @@
+#include <string.h>
 #include <node.h>
 #include <git2.h>
 #include "./object_v8.h"
-#include "./repository_v8.h"
-#include <string.h>
+#include "./common.h"
+#include "./repository.h"
 
 using namespace v8;
-
-#ifdef UNUSED
-#elif defined(__GNUC__)
-# define UNUSED(x) UNUSED_ ## x __attribute__((unused))
-#elif defined(__LCLINT__)
-# define UNUSED(x) /*@unused@*/ x
-#else
-# define UNUSED(x) x
-#endif
-
-Handle<Object> Error(int id){
-    Isolate *iso = Isolate::GetCurrent();
-    EscapableHandleScope scope(iso);
-
-    ObjectV8 ret;
-    ret.set("id", id);
-    const git_error *err = giterr_last();
-    if (err){
-        ret.set("message", err->message);
-        ret.set("klass", err->klass);
-    }else{
-        ret.set("message", "");
-        ret.set("klass", 0);
-    }
-
-    Local<Object> o= ret.toJSObject();
-    return scope.Escape(o);
-}
 
 struct InitCfg{
     int no_options;
@@ -41,91 +14,78 @@ struct InitCfg{
     uint32_t shared;
     git_repository_init_options opts;
 
-    InitCfg(const char*, int, const char*, const char*, const char*, const char*);
-};
+    InitCfg(const char *d, int b, const char *s, const char *g, const char *t, const char *de)
+        :no_options(1), dir(d), bare(b), shared(0)
+    {
+        if (!strcmp(s, "false") || !strcmp(s, "umask"))
+            shared = GIT_REPOSITORY_INIT_SHARED_UMASK;
 
-InitCfg::InitCfg(const char *d, int b, const char *s, const char *g, const char *t, const char *de)
-    :no_options(1), dir(d), bare(b), shared(0)
-{
-    if (!strcmp(s, "false") || !strcmp(s, "umask"))
-        shared = GIT_REPOSITORY_INIT_SHARED_UMASK;
+        else if (!strcmp(s, "true") || !strcmp(s, "group"))
+            shared =  GIT_REPOSITORY_INIT_SHARED_GROUP;
 
-    else if (!strcmp(s, "true") || !strcmp(s, "group"))
-        shared =  GIT_REPOSITORY_INIT_SHARED_GROUP;
+        else if (!strcmp(s, "all") || !strcmp(s, "world") || !strcmp(s, "everybody"))
+            shared = GIT_REPOSITORY_INIT_SHARED_ALL;
 
-    else if (!strcmp(s, "all") || !strcmp(s, "world") || !strcmp(s, "everybody"))
-        shared = GIT_REPOSITORY_INIT_SHARED_ALL;
-
-    else if (s[0] == '0') {
-        char *end = NULL;
-        long val = strtol(s + 1, &end, 8);
-        if (end == s + 1 || *end != 0) return; //invalid octal value for --shared
-        shared = (uint32_t)val;
-    }
-
-    git_repository_init_init_options(&opts, GIT_REPOSITORY_INIT_OPTIONS_VERSION);
-
-    int hasG = strcmp(g, "");
-    int hasT = strcmp(t, "");
-    int hasD = strcmp(de, "");
-    if (shared || hasG || hasT || hasD){
-        no_options = 0;
-        /**
-         * Some command line options were specified, so we'll use the
-         * extended init API to handle them
-         */
-        opts.flags = GIT_REPOSITORY_INIT_MKPATH;
-
-        if (bare) opts.flags |= GIT_REPOSITORY_INIT_BARE;
-
-        if (hasT) {
-            opts.flags |= GIT_REPOSITORY_INIT_EXTERNAL_TEMPLATE;
-            opts.template_path = t;
+        else if (s[0] == '0') {
+            char *end = NULL;
+            long val = strtol(s + 1, &end, 8);
+            if (end == s + 1 || *end != 0) return; //invalid octal value for --shared
+            shared = (uint32_t)val;
         }
 
-        if (hasG) {
+        git_repository_init_init_options(&opts, GIT_REPOSITORY_INIT_OPTIONS_VERSION);
+
+        int hasG = strcmp(g, "");
+        int hasT = strcmp(t, "");
+        int hasD = strcmp(de, "");
+        if (shared || hasG || hasT || hasD){
+            no_options = 0;
             /**
-             * If you specified a separate git directory, then initialize
-             * the repository at that path and use the second path as the
-             * working directory of the repository (with a git-link file)
+             * Some command line options were specified, so we'll use the
+             * extended init API to handle them
              */
-            opts.workdir_path = dir;
-            dir = g;
+            opts.flags = GIT_REPOSITORY_INIT_MKPATH;
+
+            if (bare) opts.flags |= GIT_REPOSITORY_INIT_BARE;
+
+            if (hasT) {
+                opts.flags |= GIT_REPOSITORY_INIT_EXTERNAL_TEMPLATE;
+                opts.template_path = t;
+            }
+
+            if (hasG) {
+                /**
+                 * If you specified a separate git directory, then initialize
+                 * the repository at that path and use the second path as the
+                 * working directory of the repository (with a git-link file)
+                 */
+                opts.workdir_path = dir;
+                dir = g;
+            }
+
+            if (hasD) opts.description = de;
+
+            if (shared) opts.mode = shared;
         }
-
-        if (hasD) opts.description = de;
-
-        if (shared) opts.mode = shared;
     }
-}
+};
 
 void Init(const FunctionCallbackInfo<Value> &args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
-    git_libgit2_init();
-
     Local<String> aDir;
     Local<Value> aOpts;
     Local<Function> cb;
+    Local<Value> undefined = Undefined(iso);
+    Handle<Value> typesList[][3] = {{aDir, cb, undefined}, {aDir, aOpts, cb}};
 
-    switch(args.Length()){
-    case 2:
-        aDir = args[0]->ToString();
-        aOpts = Undefined(iso);
-        cb = Local<Function>::Cast(args[1]);
-        break;
-    case 3:
-        aDir = args[0]->ToString();
-        aOpts = args[1];
-        cb = Local<Function>::Cast(args[2]);
-        break;
-    default:
+    if(!check_args(args, typesList)){
         iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
-        return;
     }
+
     String::Utf8Value dir(aDir);
-    ObjectV8 o(Local<Object>::Cast(aOpts));
+    ObjectV8 o(Local<Object>::Cast(aOpts->IsObject() ? aOpts : Local<Value>::New(iso, Undefined(iso))));
 
     String::Utf8Value shared(o.get("shared", ""));
     String::Utf8Value gitdir(o.get("gitdir", ""));
@@ -140,6 +100,8 @@ void Init(const FunctionCallbackInfo<Value> &args){
         *templ,
         *desc
     );
+
+    git_libgit2_init();
     git_repository *repo = NULL;
     int error = 0;
 
@@ -170,18 +132,16 @@ struct OpenCfg{
     unsigned int flags;
     const char *ceiling;
 
-    OpenCfg(const char*, int, int, const char*);
+    OpenCfg(const char *d, int b, int s, const char *c)
+        :no_options(1), dir(d), bare(b), flags(0), ceiling(c)
+    {
+        if (!b || !s || !c) return;
+        no_options = 0;
+
+        if (!s) flags = GIT_REPOSITORY_OPEN_NO_SEARCH;
+        if (c) flags = GIT_REPOSITORY_OPEN_CROSS_FS;
+    }
 };
-
-OpenCfg::OpenCfg(const char *d, int b, int s, const char *c)
-    :no_options(1), dir(d), bare(b), flags(0), ceiling(c)
-{
-    if (!b || !s || !c) return;
-    no_options = 0;
-
-    if (!s) flags = GIT_REPOSITORY_OPEN_NO_SEARCH;
-    if (c) flags = GIT_REPOSITORY_OPEN_CROSS_FS;
-}
 
 void Open(const FunctionCallbackInfo<Value>& args){
     Isolate *iso = Isolate::GetCurrent();
@@ -250,16 +210,7 @@ int cred_acquire_cb(git_cred **out,
         unsigned int allowed_types,
         void * UNUSED(payload))
 {
-    if (allowed_types & GIT_CREDTYPE_USERPASS_PLAINTEXT){
-        char username[128] = {0};
-        char password[128] = {0};
-        printf("Username for %s: [%s]",url,username_from_url);
-        scanf("%s", username);
-        /* Yup. Right there on your terminal. Careful where you copy/paste output. */
-        printf("Password: ");
-        scanf("%s", password);
-        return git_cred_userpass_plaintext_new(out, username, password);
-    }else if (allowed_types & GIT_CREDTYPE_SSH_KEY){
+    if (allowed_types & GIT_CREDTYPE_SSH_KEY){
         return git_cred_ssh_key_new(out, username_from_url, "/home/ubuntu/.ssh/id_rsa.pub", "/home/ubuntu/.ssh/id_rsa", "darren<3snow");
     }else if (allowed_types & GIT_CREDTYPE_SSH_CUSTOM){
         //return git_cred_ssh_custom_new();
@@ -270,14 +221,26 @@ int cred_acquire_cb(git_cred **out,
     }else if (allowed_types & GIT_CREDTYPE_USERNAME){
         //return git_cred_username_new();
     }
+
+    // GIT_CREDTYPE_USERPASS_PLAINTEXT
+    char username[128] = {0};
+    char password[128] = {0};
+    printf("Username for %s: [%s]",url,username_from_url);
+    if (EOF == scanf("%s", username)) return -1;
+    /* Yup. Right there on your terminal. Careful where you copy/paste output. */
+    printf("Password: ");
+    if (EOF == scanf("%s", password)) return -1;
+    return git_cred_userpass_plaintext_new(out, username, password);
 }
 
-typedef struct progress_data {
-    git_transfer_progress fetch_progress;
+struct progress_data {
     size_t completed_steps;
     size_t total_steps;
     const char *path;
-} progress_data;
+    git_transfer_progress fetch_progress;
+    progress_data():completed_steps(0),total_steps(0),path(NULL){
+    }
+};
 
 static void print_progress(const progress_data *pd) {
     int network_percent = pd->fetch_progress.total_objects > 0 ?  (100*pd->fetch_progress.received_objects) / pd->fetch_progress.total_objects : 0;
@@ -320,23 +283,21 @@ struct CloneCfg{
     git_checkout_options checkout_opts;
     git_clone_options clone_opts;
 
-    CloneCfg(const char*, const char*, int);
+    CloneCfg(const char *u, const char *d, int f)
+        :url(u), dir(d)
+    {
+        git_clone_init_options(&clone_opts, GIT_CLONE_OPTIONS_VERSION);
+        git_checkout_init_options(&checkout_opts, GIT_CHECKOUT_OPTIONS_VERSION);
+
+        checkout_opts.checkout_strategy = f ? GIT_CHECKOUT_FORCE : GIT_CHECKOUT_SAFE_CREATE;
+        checkout_opts.progress_cb = &checkout_progress;
+        checkout_opts.progress_payload = &pd;
+        clone_opts.checkout_opts = checkout_opts;
+        clone_opts.remote_callbacks.transfer_progress = &fetch_progress;
+        clone_opts.remote_callbacks.credentials = cred_acquire_cb;
+        clone_opts.remote_callbacks.payload = &pd;
+    }
 };
-
-CloneCfg::CloneCfg(const char *u, const char *d, int f)
-    :url(u), dir(d), pd({{0}})
-{
-    git_clone_init_options(&clone_opts, GIT_CLONE_OPTIONS_VERSION);
-    git_checkout_init_options(&checkout_opts, GIT_CHECKOUT_OPTIONS_VERSION);
-
-    checkout_opts.checkout_strategy = f ? GIT_CHECKOUT_FORCE : GIT_CHECKOUT_SAFE_CREATE;
-    checkout_opts.progress_cb = &checkout_progress;
-    checkout_opts.progress_payload = &pd;
-    clone_opts.checkout_opts = checkout_opts;
-    clone_opts.remote_callbacks.transfer_progress = &fetch_progress;
-    clone_opts.remote_callbacks.credentials = cred_acquire_cb;
-    clone_opts.remote_callbacks.payload = &pd;
-}
 
 void Clone(const FunctionCallbackInfo<Value>& args){
     Isolate *iso = Isolate::GetCurrent();

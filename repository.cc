@@ -1,21 +1,11 @@
 #include <node.h>
 #include <git2.h>
-#include "./repository_v8.h"
+#include "./object_v8.h"
+#include "./common.h"
+#include "./repository.h"
+#include "./commit.h"
 
 using namespace v8;
-
-Handle<Function> wrap_func(FunctionCallback func, const char *name=NULL){
-    Isolate* iso = Isolate::GetCurrent();
-    EscapableHandleScope scope(iso);
-
-    Local<FunctionTemplate> tpl = FunctionTemplate::New(iso, func);
-    Local<Function> fn = tpl->GetFunction();
-
-    // omit this to make it anonymous
-    if (name) fn->SetName(String::NewFromUtf8(iso, name));
-
-    return scope.Escape(fn);
-}
 
 Handle<Object> repo_create(git_repository *repo){
     Isolate* iso = Isolate::GetCurrent();
@@ -43,7 +33,7 @@ void repo_remove(const FunctionCallbackInfo<Value>& args){
         return;
     }
     git_libgit2_init();
-    git_repository_free(static_cast<git_repository*>(ptr->Value()));
+    git_repository_free((git_repository*)(ptr->Value()));
     r->DeleteHiddenValue(key);
     git_libgit2_shutdown();
 
@@ -73,7 +63,7 @@ void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
     git_oid oid;
     git_oid_fromstrp(&oid, *oidHex);
 
-    int error = git_commit_loopup(&commit, ptr->Value(), &oid);
+    int error = git_commit_lookup(&commit, (git_repository*)(ptr->Value()), &oid);
 
     if (error){
         const unsigned argc = 1;

@@ -1,6 +1,15 @@
 #ifndef _OBJECT_V8_H_
 #define _OBJECT_V8_H_
 
+#ifdef UNUSED
+#elif defined(__GNUC__)
+# define UNUSED(x) UNUSED_ ## x __attribute__((unused))
+#elif defined(__LCLINT__)
+# define UNUSED(x) /*@unused@*/ x
+#else
+# define UNUSED(x) x
+#endif
+
 #include <string>
 
 class ObjectV8{
