@@ -77,15 +77,25 @@ void Init(const FunctionCallbackInfo<Value> &args){
     Local<String> aDir;
     Local<Value> aOpts;
     Local<Function> cb;
-    Local<Value> undefined = Undefined(iso);
-    Handle<Value> typesList[][3] = {{aDir, cb, undefined}, {aDir, aOpts, cb}};
 
-    if(!check_args(args, typesList)){
+    switch(args.Length()){
+    case 2:
+        aDir = args[0]->ToString();
+        aOpts = Undefined(iso);
+        cb = Local<Function>::Cast(args[1]);
+        break;
+    case 3:
+        aDir = args[0]->ToString();
+        aOpts = args[1];
+        cb = Local<Function>::Cast(args[2]);
+        break;
+    default:
         iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
+        return;
     }
 
     String::Utf8Value dir(aDir);
-    ObjectV8 o(Local<Object>::Cast(aOpts->IsObject() ? aOpts : Local<Value>::New(iso, Undefined(iso))));
+    ObjectV8 o(Local<Object>::Cast(aOpts));
 
     String::Utf8Value shared(o.get("shared", ""));
     String::Utf8Value gitdir(o.get("gitdir", ""));
@@ -111,16 +121,7 @@ void Init(const FunctionCallbackInfo<Value> &args){
         error = git_repository_init_ext(&repo, cfg.dir, &(cfg.opts));
     }
 
-    if (error){
-        const unsigned argc = 1;
-        Local<Value> argv[argc] = { Error(error) };
-        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
-        return;
-    }
-
-    const unsigned argc = 2;
-    Local<Value> argv[argc] = { Null(iso), repo_create(repo) };
-    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+    next(iso, cb, error, repo_create, repo);
 
     git_libgit2_shutdown();
 }
@@ -146,8 +147,6 @@ struct OpenCfg{
 void Open(const FunctionCallbackInfo<Value>& args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
-
-    git_libgit2_init();
 
     Local<String> aDir;
     Local<Value> aOpts;
@@ -179,6 +178,8 @@ void Open(const FunctionCallbackInfo<Value>& args){
         o.get("search", 0), 
         *ceil
     );
+
+    git_libgit2_init();
     git_repository *repo = NULL;
     int error = 0;
 
@@ -190,16 +191,7 @@ void Open(const FunctionCallbackInfo<Value>& args){
         error = git_repository_open_ext(&repo, cfg.dir, cfg.flags, cfg.ceiling);
     }
 
-    if (error){
-        const unsigned argc = 1;
-        Local<Value> argv[argc] = { Error(error) };
-        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
-        return;
-    }
-
-    const unsigned argc = 2;
-    Local<Value> argv[argc] = { Null(iso), repo_create(repo) };
-    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+    next(iso, cb, error, repo_create, repo);
 
     git_libgit2_shutdown();
 }
@@ -303,8 +295,6 @@ void Clone(const FunctionCallbackInfo<Value>& args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
-    git_libgit2_init();
-
     Local<String> aUrl;
     Local<String> aDir;
     Local<Value> aOpts;
@@ -336,19 +326,12 @@ void Clone(const FunctionCallbackInfo<Value>& args){
         *dir,
         o.get("force", 0)
     );
+
+    git_libgit2_init();
     git_repository *repo = NULL;
     int error = git_clone(&repo, cfg.url, cfg.dir, &(cfg.clone_opts));
 
-    if (error){
-        const unsigned argc = 1;
-        Local<Value> argv[argc] = { Error(error) };
-        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
-        return;
-    }
-
-    const unsigned argc = 2;
-    Local<Value> argv[argc] = { Null(iso), repo_create(repo) };
-    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+    next(iso, cb, error, repo_create, repo);
 
     git_libgit2_shutdown();
 }

@@ -7,7 +7,7 @@ gitdist.init('repo1', {shared:'false'}, function(err, repo){
     repo.pull() 
     repo.free()
 })
-
+/*
 function cred(){
 }
 
@@ -29,3 +29,4 @@ gitdist.open('repo2', function(err, repo){
     repo.pull() 
     repo.free()
 })
+*/

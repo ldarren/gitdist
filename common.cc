@@ -1,9 +1,58 @@
 #include <node.h>
 #include <git2.h>
+#include <stdarg.h>
 #include "./object_v8.h"
 #include "./common.h"
 
 using namespace v8;
+
+Handle<Object> self_alloc(void *ptr){
+    Isolate* iso = Isolate::GetCurrent();
+    EscapableHandleScope scope(iso);
+
+    Local<String> KEY_SELF = String::NewFromUtf8(iso, "self");
+
+    Local<Object> self = Object::New(iso);
+    self->SetHiddenValue(Local<String>::New(iso, KEY_SELF), External::New(iso, ptr));
+
+    return scope.Escape(self);
+}
+
+void* self_get(const FunctionCallbackInfo<Value>& args){
+    Isolate* iso = Isolate::GetCurrent();
+    HandleScope scope(iso);
+
+    Local<String> KEY_SELF = String::NewFromUtf8(iso, "self");
+
+    Local<Object> r = args.Holder();
+    Local<External> ptr = Local<External>::Cast(r->GetHiddenValue(Local<String>::New(iso, KEY_SELF)));
+    if (!ptr->IsExternal()){
+        return 0;
+    }
+    return ptr->Value();
+}
+
+void self_free(const FunctionCallbackInfo<Value>& args){
+    Isolate* iso = Isolate::GetCurrent();
+    HandleScope scope(iso);
+
+    Local<String> KEY_SELF = String::NewFromUtf8(iso, "self");
+
+    args.Holder()->DeleteHiddenValue(Local<String>::New(iso, KEY_SELF));
+}
+
+Handle<Function> wrap_func(FunctionCallback func, const char *name){
+    Isolate* iso = Isolate::GetCurrent();
+    EscapableHandleScope scope(iso);
+
+    Local<FunctionTemplate> tpl = FunctionTemplate::New(iso, func);
+    Local<Function> fn = tpl->GetFunction();
+
+    // omit this to make it anonymous
+    if (name) fn->SetName(String::NewFromUtf8(iso, name));
+
+    return scope.Escape(fn);
+}
 
 Handle<Object> Error(int id){
     Isolate *iso = Isolate::GetCurrent();
@@ -24,64 +73,15 @@ Handle<Object> Error(int id){
     return scope.Escape(o);
 }
 
-Handle<Function> wrap_func(FunctionCallback func, const char *name){
-    Isolate* iso = Isolate::GetCurrent();
-    EscapableHandleScope scope(iso);
-
-    Local<FunctionTemplate> tpl = FunctionTemplate::New(iso, func);
-    Local<Function> fn = tpl->GetFunction();
-
-    // omit this to make it anonymous
-    if (name) fn->SetName(String::NewFromUtf8(iso, name));
-
-    return scope.Escape(fn);
-}
-
-int check_args(const FunctionCallbackInfo<Value> &args, Handle<Value> *typesList){
-    int ret = 1;
-    int argsLen = args.Length();
-    int typesLen = sizeof(typesList);
-    Handle<Value> *types;
-
-    for(int i=0; i<typesLen; i++){
-        types = typesList[i];
-        if (argsLen == sizeof(types)){
-            int correct = 1;
-            Local<Value> t;
-            for(int j=0; j<argsLen; j++){
-                t = types[j];
-                if (t->IsObject()){
-                    if (!(args[j]->IsObject())){
-                        correct=0;
-                        break;
-                    }
-                }else if (t->IsArray()){
-                    if (!(args[j]->IsArray())){
-                        correct=0;
-                        break;
-                    }
-                }else if (t->IsFunction()){
-                    if (!(args[j]->IsFunction())){
-                        correct=0;
-                        break;
-                    }
-                }else if (t->IsNumber()){
-                    if (!(args[j]->IsNumber())){
-                        correct=0;
-                        break;
-                    }
-                }else if (t->IsString()){
-                    if (!(args[j]->IsString())){
-                        correct=0;
-                        break;
-                    }
-                }
-                t = args[j];
-            }
-            if (correct) ret = 0;
-            break;
-        }
+void next(Isolate *iso, Handle<Function> cb, int error, FactoryFunc func, void *ptr){
+    if (error){
+        const unsigned argc = 1;
+        Local<Value> argv[argc] = { Error(error) };
+        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+        return;
     }
 
-    return ret;
+    const unsigned argc = 2;
+    Local<Value> argv[argc] = { Null(iso), func(ptr) };
+    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
 }
