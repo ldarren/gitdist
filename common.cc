@@ -73,15 +73,18 @@ Handle<Object> Error(int id){
     return scope.Escape(o);
 }
 
-void next(Isolate *iso, Handle<Function> cb, int error, FactoryFunc func, void *ptr){
+void next(Isolate *iso, Handle<Function> cb, int error, FactoryFunc func=NULL, void *ptr=0){
     if (error){
         const unsigned argc = 1;
         Local<Value> argv[argc] = { Error(error) };
         cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
-        return;
+    }else if (func){
+        const unsigned argc = 2;
+        Local<Value> argv[argc] = { Null(iso), func(ptr) };
+        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+    }else{
+        const unsigned argc = 0;
+        Local<Value> argv[argc] = {};
+        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
     }
-
-    const unsigned argc = 2;
-    Local<Value> argv[argc] = { Null(iso), func(ptr) };
-    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
 }

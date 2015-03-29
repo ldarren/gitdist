@@ -24,9 +24,9 @@ void repo_remove(const FunctionCallbackInfo<Value>& args){
     Isolate* iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
-    git_repository *ptr = (git_repository*)self_get(args);    
+    git_repository *repo = (git_repository*)self_get(args);    
     git_libgit2_init();
-    git_repository_free(ptr);
+    git_repository_free(repo);
     self_free(args);
     git_libgit2_shutdown();
 
@@ -34,42 +34,69 @@ void repo_remove(const FunctionCallbackInfo<Value>& args){
 }
 
 void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
-    Isolate* iso = Isolate::GetCurrent();
+    Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
-    Local<String> key = String::NewFromUtf8(iso, "_repo");
-    Local<Object> r = args.Holder();
-    Local<External> ptr = Local<External>::Cast(r->GetHiddenValue(key));
-    if (!ptr->IsExternal()){
-        iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong context")));
+    Local<String> aPath;
+    Local<String> aComment;
+    Local<Function> cb;
+
+    switch(args.Length()){
+    case 3:
+        aPath = args[0]->ToString();
+        aComment = args[1]->ToString();
+        cb = Local<Function>::Cast(args[2]);
+        break;
+    default:
+        iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
+        return;
     }
-
-    if (2 != args.Length()) iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
-    if (!args[0]->IsString() || !args[1]->IsFunction()) iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Missing oid or callback")));
-
-    String::Utf8Value oidHex(args[0]->ToString());
-    Local<Function> cb = Local<Function>::Cast(args[1]);
+    String::Utf8Value path(aPath);
+    String::Utf8Value comment(aComment);
 
     git_libgit2_init();
 
-    git_commit *commit;
-    git_oid oid;
-    git_oid_fromstrp(&oid, *oidHex);
+    git_repository *repo = (git_repository*)self_get(args);    
+    int rc;              /* return code for git_ functions */
+    git_signature *sign;
+    git_oid oid_blob;    /* the SHA1 for our blob in the tree */
+    git_oid oid_tree;    /* the SHA1 for our tree in the commit */
+    git_oid oid_commit;  /* the SHA1 for our initial commit */
+    git_blob * blob;     /* our blob in the tree */
+    git_tree * tree_cmt; /* our tree in the commit */
+    git_treebuilder * tree_bld;  /* tree builder */
 
-    int error = git_commit_lookup(&commit, (git_repository*)(ptr->Value()), &oid);
+    /* create a blob from our buffer */
+    rc = git_blob_create_fromworkdir( &oid_blob, repo, *path);
+    if (rc) return next(iso, cb, rc);
+    rc = git_blob_lookup( &blob, repo, &oid_blob );
+    if (rc) return next(iso, cb, rc);
+    rc = git_treebuilder_create( &tree_bld, NULL );
+    if (rc) return next(iso, cb, rc);
+    rc = git_treebuilder_insert( NULL, tree_bld, "name-of-the-file.txt", &oid_blob, GIT_FILEMODE_BLOB );
+    if (rc) return next(iso, cb, rc);
+    rc = git_treebuilder_write( &oid_tree, repo, tree_bld );
+    if (rc) return next(iso, cb, rc);
+    rc = git_tree_lookup( &tree_cmt, repo, &oid_tree );
+    if (rc) return next(iso, cb, rc);
+    rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
+    if (rc) return next(iso, cb, rc);
+    rc = git_commit_create(
+        &oid_commit, repo, "HEAD",
+        sign, sign, /* same author and commiter */
+        NULL, /* default UTF-8 encoding */
+        message,
+        tree_cmt, 0, NULL );
 
-    if (error){
-        const unsigned argc = 1;
-        Local<Value> argv[argc] = { Error(error) };
-        cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
-        return;
-    }
-
-    const unsigned argc = 2;
-    Local<Value> argv[argc] = { Null(iso), commit_create(commit) };
-    cb->Call(iso->GetCurrentContext()->Global(), argc, argv);
+    git_signature_free(sign);
+    git_tree_free( tree_cmt );
+    git_treebuilder_free( tree_bld );
+    git_blob_free( blob );
 
     git_libgit2_shutdown();
+
+    return next(iso, cb, rc);
+
 }
 
 void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
