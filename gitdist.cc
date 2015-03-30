@@ -336,14 +336,14 @@ void Clone(const FunctionCallbackInfo<Value>& args){
     git_libgit2_shutdown();
 }
 
-void Signature(const FunctionCallbackInfo<Value> &args){
+void Sign(const FunctionCallbackInfo<Value> &args){
 }
 
 void setup(Handle<Object> exports){
     NODE_SET_METHOD(exports, "init", Init);
     NODE_SET_METHOD(exports, "open", Open);
     NODE_SET_METHOD(exports, "clone", Clone);
-    NODE_SET_METHOD(exports, "signature", Signature);
+    NODE_SET_METHOD(exports, "sign", Sign);
 }
 
 NODE_MODULE(gitdist, setup)

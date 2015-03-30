@@ -73,7 +73,7 @@ Handle<Object> Error(int id){
     return scope.Escape(o);
 }
 
-void next(Isolate *iso, Handle<Function> cb, int error, FactoryFunc func=NULL, void *ptr=0){
+void next(Isolate *iso, Handle<Function> cb, int error, FactoryFunc func, void *ptr){
     if (error){
         const unsigned argc = 1;
         Local<Value> argv[argc] = { Error(error) };
