@@ -64,14 +64,19 @@ void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
     if (rc) return next(iso, cb, rc);
 
     if (/*git_repository_head_unborn(repo)*/1){
-printf("born\n");
         git_oid tree_id, parent_id, commit_id;
+        git_index *index;
         git_tree *tree;
         git_commit *parent;
-        git_index *index;
 
         /* Get the index and write it to a tree */
         rc = git_repository_index(&index, repo);
+        if (rc) return next(iso, cb, rc);
+        rc = git_index_read(index, 1);
+        if (rc) return next(iso, cb, rc);
+        rc = git_index_add_bypath(index, *path);
+        if (rc) return next(iso, cb, rc);
+        rc = git_index_write(index);
         if (rc) return next(iso, cb, rc);
         rc = git_index_write_tree(&tree_id, index);
         if (rc) return next(iso, cb, rc);
@@ -100,14 +105,15 @@ printf("born\n");
         if (rc) return next(iso, cb, rc);
         git_commit_free( parent );
         git_tree_free( tree );
+        git_index_free( index );
     }else{ // initial commit
-printf("unborn\n");
         git_oid oid_blob;    /* the SHA1 for our blob in the tree */
         git_oid oid_tree;    /* the SHA1 for our tree in the commit */
         git_oid oid_commit;  /* the SHA1 for our initial commit */
         git_blob * blob;     /* our blob in the tree */
         git_tree * tree_cmt; /* our tree in the commit */
         git_treebuilder * tree_bld;  /* tree builder */
+
         rc = git_blob_create_fromworkdir( &oid_blob, repo, *path);
         if (rc) return next(iso, cb, rc);
         rc = git_blob_lookup( &blob, repo, &oid_blob );
@@ -139,10 +145,242 @@ printf("unborn\n");
 
 }
 
+struct dl_data {
+  git_remote *remote;
+  int ret;
+  int finished;
+};
+
+static int progress_cb(const char *str, int len, void *data) {
+  (void)data;
+  printf("remote: %.*s", len, str);
+  fflush(stdout); /* We don't have the \n to force the flush */
+  return 0;
+}
+
+static int update_cb(const char *refname, const git_oid *a, const git_oid *b, void *data) {
+  char a_str[GIT_OID_HEXSZ+1], b_str[GIT_OID_HEXSZ+1];
+  (void)data;
+
+  git_oid_fmt(b_str, b);
+  b_str[GIT_OID_HEXSZ] = '\0';
+
+  if (git_oid_iszero(a)) {
+    printf("[new]     %.20s %s\n", b_str, refname);
+  } else {
+    git_oid_fmt(a_str, a);
+    a_str[GIT_OID_HEXSZ] = '\0';
+    printf("[updated] %.10s..%.10s %s\n", a_str, b_str, refname);
+  }
+
+  return 0;
+}
+
+static void *download(void *ptr) {
+    struct dl_data *data = (struct dl_data *)ptr;
+
+    // Connect to the remote end specifying that we want to fetch
+    // information from it.
+    if (git_remote_connect(data->remote, GIT_DIRECTION_FETCH) < 0) {
+        data->ret = -1;
+        goto exit;
+    }
+
+    // Download the packfile and index it. This function updates the
+    // amount of received data and the indexer stats which lets you
+    // inform the user about progress.
+    if (git_remote_download(data->remote, NULL) < 0) {
+        data->ret = -1;
+        goto exit;
+    }
+
+    data->ret = 0;
+
+exit:
+    data->finished = 1;
+    return &data->ret;
+}
+
 void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
-    printf("pull\n");
+    Isolate *iso = Isolate::GetCurrent();
+    HandleScope scope(iso);
+
+    Local<String> aName;
+    Local<String> aRefspec;
+    Local<Function> cb;
+
+    switch(args.Length()){
+    case 1:
+        aName = String::NewFromUtf8("origin");
+        aRefspec = String::NewFromUtf8("refs/heads/master:refs/heads/master");
+        cb = Local<Function>::Cast(args[0]);
+        break;
+    case 3:
+        aName = args[0]->ToString();
+        aRefspec = args[1]->ToString();
+        cb = Local<Function>::Cast(args[2]);
+        break;
+    default:
+        iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
+        return;
+    }
+    String::Utf8Value name(aName);
+    String::Utf8Value refspec(aRefspec);
+
+    git_libgit2_init();
+
+    pthread_t worker;
+    git_repository *repo = (git_repository*)self_get(args);
+
+    // get the remote.
+    int rc;
+    git_remote* remote = NULL;
+    rc = git_remote_lookup( &remote, repo, *name );
+    if (rc) {
+        rc = git_remote_create_anonymous(&remote, repo, *name, NULL);
+        if (rc) goto cleanup;
+    }
+
+    git_remote_callbacks callbacks = GIT_REMOTE_CALLBACKS_INIT;
+    callbacks.update_tips = &update_cb;
+    callbacks.sideband_progress = &progress_cb;
+    callbacks.credentials = cred_acquire_cb;
+    git_remote_set_callbacks(remote, &callbacks);
+
+    data.remote = remote;
+    data.ret = 0;
+    data.finished = 0;
+
+    stats = git_remote_stats(remote);
+    pthread_create(&worker, NULL, download, &data);
+    do {
+        usleep(10000);
+
+        if (stats->received_objects == stats->total_objects) {
+            printf("Resolving deltas %d/%d\r",
+            stats->indexed_deltas, stats->total_deltas);
+        } else if (stats->total_objects > 0) {
+            printf("Received %d/%d objects (%d) in %" PRIuZ " bytes\r",
+            stats->received_objects, stats->total_objects,
+            stats->indexed_objects, stats->received_bytes);
+        }
+    } while (!data.finished);
+
+    if (data.ret < 0)
+    goto on_error;
+
+    pthread_join(worker, NULL);
+    if (stats->local_objects > 0) {
+        printf("\rReceived %d/%d objects in %zu bytes (used %d local objects)\n",
+        stats->indexed_objects, stats->total_objects, stats->received_bytes, stats->local_objects);
+    } else{
+        printf("\rReceived %d/%d objects in %zu bytes\n",
+        stats->indexed_objects, stats->total_objects, stats->received_bytes);
+    }
+
+    rc = git_remote_disconnect(remote);
+    if (rc) goto cleanup;
+
+    rc = git_remote_update_tips(remote, NULL);
+    if (rc) goto cleanup;
+
+//https://github.com/libgit2/libgit2/issues/1555
+/*
+//https://github.com/nodegit/nodegit/issues/151
+A git pull is a fetch and merge
+
+- Connection to the remote
+- Download the pack, I'm guessing this is effectively a fetch,
+- then create a diff between the current head and the fetched content.
+- Do a merge if needed on the diff and create a patch, then apply the patch externally or with some other module.
+- Finally create another commit to represent this merge.
+- If a fast-forward is possible (Nothing needs to be merged because the commit your local branch is on is a direct ancestor of the commit you're pulling), then you can perhaps just repoint the index.
+ */
+/*
+repo.fetchAll({
+    credentials: function(url, userName) {
+        return NodeGit.Cred.sshKeyFromAgent(userName);
+    }
+}).then(function() {
+    repo.mergeBranches("master", "origin/master");
+});
+ */
+//git_merge_trees
+//git_index_has_conflicts //https://github.com/libgit2/libgit2/issues/1567
+//git_index_write_tree
+//git_commit_create
+
+cleanup:
+    git_remote_free(remote);
+    git_libgit2_shutdown();
+
+    return next(iso, cb, rc);
 }
 
 void repo_push(const v8::FunctionCallbackInfo<v8::Value> &args){
-    printf("push\n");
+    Isolate *iso = Isolate::GetCurrent();
+    HandleScope scope(iso);
+
+    Local<String> aName;
+    Local<String> aRefspec;
+    Local<Function> cb;
+
+    switch(args.Length()){
+    case 1:
+        aName = String::NewFromUtf8("origin");
+        aRefspec = String::NewFromUtf8("refs/heads/master:refs/heads/master");
+        cb = Local<Function>::Cast(args[0]);
+        break;
+    case 3:
+        aName = args[0]->ToString();
+        aRefspec = args[1]->ToString();
+        cb = Local<Function>::Cast(args[2]);
+        break;
+    default:
+        iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
+        return;
+    }
+    String::Utf8Value name(aName);
+    String::Utf8Value refspec(aRefspec);
+
+    git_libgit2_init();
+
+    git_repository *repo = (git_repository*)self_get(args);
+
+    // get the remote.
+    int rc;
+    git_remote* remote = NULL;
+    rc = git_remote_lookup( &remote, repo, *name );
+    if (rc) {
+        rc = git_remote_create_anonymous(&remote, repo, *name, NULL);
+        if (rc) goto cleanup;
+    }
+
+    git_remote_callbacks callbacks = GIT_REMOTE_CALLBACKS_INIT;
+    callbacks.credentials = cred_acquire_cb;
+    git_remote_set_callbacks(remote, &callbacks);
+
+    // connect to remote
+    rc = git_remote_connect( remote, GIT_DIRECTION_PUSH )
+    if (rc) goto cleanup;
+
+    // add a push refspec
+    rc = git_remote_add_push( remote, *refspec );
+    if (rc) goto cleanup;
+
+    // configure options
+    git_push_options options;
+    rc = git_push_init_options( &options, GIT_PUSH_OPTIONS_VERSION );
+    if (rc) goto cleanup;
+
+    // do the push
+    rc = git_remote_upload( remote, NULL, &options );
+    if (rc) goto cleanup;
+
+cleanup:    
+    git_remote_disconnect(remote);
+    git_remote_free(remote);
+    git_libgit2_shutdown();
+
+    return next(iso, cb, rc);
 }

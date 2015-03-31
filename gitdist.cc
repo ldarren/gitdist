@@ -196,35 +196,6 @@ void Open(const FunctionCallbackInfo<Value>& args){
     git_libgit2_shutdown();
 }
 
-int cred_acquire_cb(git_cred **out,
-        const char * url,
-        const char * username_from_url,
-        unsigned int allowed_types,
-        void * UNUSED(payload))
-{
-    if (allowed_types & GIT_CREDTYPE_SSH_KEY){
-        return git_cred_ssh_key_new(out, username_from_url, "/home/ubuntu/.ssh/id_rsa.pub", "/home/ubuntu/.ssh/id_rsa", "darren<3snow");
-    }else if (allowed_types & GIT_CREDTYPE_SSH_CUSTOM){
-        //return git_cred_ssh_custom_new();
-    }else if (allowed_types & GIT_CREDTYPE_DEFAULT){
-        //return git_cred_default_new();
-    }else if (allowed_types & GIT_CREDTYPE_SSH_INTERACTIVE){
-        //return git_cred_ssh_interactive_new();
-    }else if (allowed_types & GIT_CREDTYPE_USERNAME){
-        //return git_cred_username_new();
-    }
-
-    // GIT_CREDTYPE_USERPASS_PLAINTEXT
-    char username[128] = {0};
-    char password[128] = {0};
-    printf("Username for %s: [%s]",url,username_from_url);
-    if (EOF == scanf("%s", username)) return -1;
-    /* Yup. Right there on your terminal. Careful where you copy/paste output. */
-    printf("Password: ");
-    if (EOF == scanf("%s", password)) return -1;
-    return git_cred_userpass_plaintext_new(out, username, password);
-}
-
 struct progress_data {
     size_t completed_steps;
     size_t total_steps;

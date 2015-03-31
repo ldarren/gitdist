@@ -11,4 +11,6 @@ v8::Handle<v8::Object> Error(int id);
 v8::Handle<v8::Function> wrap_func(v8::FunctionCallback, const char *name=NULL);
 void next(v8::Isolate*, v8::Handle<v8::Function>, int, FactoryFunc func=NULL, void *ptr=NULL);
 
+int cred_acquire_cb(git_cred **, const char *, const char *, unsigned int, void *);
+
 #endif // _GITDIST_COMMON_H_
