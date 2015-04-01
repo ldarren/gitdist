@@ -1,5 +1,6 @@
 #include <node.h>
 #include <git2.h>
+#include <unistd.h>
 #include "./object_v8.h"
 #include "./common.h"
 #include "./repository.h"
@@ -211,8 +212,8 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
 
     switch(args.Length()){
     case 1:
-        aName = String::NewFromUtf8("origin");
-        aRefspec = String::NewFromUtf8("refs/heads/master:refs/heads/master");
+        aName = String::NewFromUtf8(iso, "origin");
+        aRefspec = String::NewFromUtf8(iso, "refs/heads/master:refs/heads/master");
         cb = Local<Function>::Cast(args[0]);
         break;
     case 3:
@@ -234,6 +235,8 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
 
     // get the remote.
     int rc;
+    const git_transfer_progress *stats;
+    struct dl_data data;
     git_remote* remote = NULL;
     rc = git_remote_lookup( &remote, repo, *name );
     if (rc) {
@@ -241,7 +244,8 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
         if (rc) goto cleanup;
     }
 
-    git_remote_callbacks callbacks = GIT_REMOTE_CALLBACKS_INIT;
+    git_remote_callbacks callbacks;
+    git_remote_init_callbacks(&callbacks, GIT_REMOTE_CALLBACKS_VERSION);
     callbacks.update_tips = &update_cb;
     callbacks.sideband_progress = &progress_cb;
     callbacks.credentials = cred_acquire_cb;
@@ -260,14 +264,13 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
             printf("Resolving deltas %d/%d\r",
             stats->indexed_deltas, stats->total_deltas);
         } else if (stats->total_objects > 0) {
-            printf("Received %d/%d objects (%d) in %" PRIuZ " bytes\r",
+            printf("Received %d/%d objects (%d) in %4zu bytes\r",
             stats->received_objects, stats->total_objects,
             stats->indexed_objects, stats->received_bytes);
         }
     } while (!data.finished);
 
-    if (data.ret < 0)
-    goto on_error;
+    if (data.ret < 0) goto cleanup;
 
     pthread_join(worker, NULL);
     if (stats->local_objects > 0) {
@@ -278,10 +281,12 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
         stats->indexed_objects, stats->total_objects, stats->received_bytes);
     }
 
-    rc = git_remote_disconnect(remote);
-    if (rc) goto cleanup;
+    git_remote_disconnect(remote);
 
-    rc = git_remote_update_tips(remote, NULL);
+    git_signature *sign;
+    rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
+    if (rc) goto cleanup;
+    rc = git_remote_update_tips(remote, sign, NULL);
     if (rc) goto cleanup;
 
 //https://github.com/libgit2/libgit2/issues/1555
@@ -327,8 +332,8 @@ void repo_push(const v8::FunctionCallbackInfo<v8::Value> &args){
 
     switch(args.Length()){
     case 1:
-        aName = String::NewFromUtf8("origin");
-        aRefspec = String::NewFromUtf8("refs/heads/master:refs/heads/master");
+        aName = String::NewFromUtf8(iso, "origin");
+        aRefspec = String::NewFromUtf8(iso, "refs/heads/master:refs/heads/master");
         cb = Local<Function>::Cast(args[0]);
         break;
     case 3:
@@ -356,12 +361,13 @@ void repo_push(const v8::FunctionCallbackInfo<v8::Value> &args){
         if (rc) goto cleanup;
     }
 
-    git_remote_callbacks callbacks = GIT_REMOTE_CALLBACKS_INIT;
+    git_remote_callbacks callbacks;
+    git_remote_init_callbacks(&callbacks, GIT_REMOTE_CALLBACKS_VERSION);
     callbacks.credentials = cred_acquire_cb;
     git_remote_set_callbacks(remote, &callbacks);
 
     // connect to remote
-    rc = git_remote_connect( remote, GIT_DIRECTION_PUSH )
+    rc = git_remote_connect( remote, GIT_DIRECTION_PUSH );
     if (rc) goto cleanup;
 
     // add a push refspec
