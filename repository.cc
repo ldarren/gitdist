@@ -13,8 +13,9 @@ Handle<Value> repo_create(void *ptr){
     EscapableHandleScope scope(iso);
 
     Local<Object> self = self_alloc(ptr);
-    self->Set(String::NewFromUtf8(iso, "pull"), wrap_func(repo_pull));
-    self->Set(String::NewFromUtf8(iso, "commit"), wrap_func(repo_commit_get));
+    self->Set(String::NewFromUtf8(iso, "fetch"), wrap_func(repo_fetch));
+    self->Set(String::NewFromUtf8(iso, "merge"), wrap_func(repo_merge));
+    self->Set(String::NewFromUtf8(iso, "commit"), wrap_func(repo_commit));
     self->Set(String::NewFromUtf8(iso, "push"), wrap_func(repo_push));
     self->Set(String::NewFromUtf8(iso, "free"), wrap_func(repo_remove));
 
@@ -34,7 +35,7 @@ void repo_remove(const FunctionCallbackInfo<Value>& args){
     args.GetReturnValue().Set(Number::New(iso, 0));
 }
 
-void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
+void repo_commit(const v8::FunctionCallbackInfo<v8::Value> &args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
@@ -62,7 +63,7 @@ void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
     git_signature *sign;
 
     rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
-    if (rc) return next(iso, cb, rc);
+    if (rc) goto cleanup;
 
     if (/*git_repository_head_unborn(repo)*/1){
         git_oid tree_id, parent_id, commit_id;
@@ -72,23 +73,23 @@ void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
 
         /* Get the index and write it to a tree */
         rc = git_repository_index(&index, repo);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_index_read(index, 1);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_index_add_bypath(index, *path);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_index_write(index);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_index_write_tree(&tree_id, index);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_tree_lookup(&tree, repo, &tree_id);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
 
         /* Get HEAD as a commit object to use as the parent of the commit */
         rc = git_reference_name_to_id(&parent_id, repo, "HEAD");
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_commit_lookup(&parent, repo, &parent_id);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
 
         /* Do the commit */
         rc = git_commit_create_v(
@@ -103,7 +104,9 @@ void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
             1,          /* Only one parent */
             parent      /* No need to make a list with create_v */
         );
-        if (rc) return next(iso, cb, rc);
+        if (rc) return goto cleanup;
+
+cleanup:
         git_commit_free( parent );
         git_tree_free( tree );
         git_index_free( index );
@@ -116,24 +119,26 @@ void repo_commit_get(const v8::FunctionCallbackInfo<v8::Value> &args){
         git_treebuilder * tree_bld;  /* tree builder */
 
         rc = git_blob_create_fromworkdir( &oid_blob, repo, *path);
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_blob_lookup( &blob, repo, &oid_blob );
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_treebuilder_new( &tree_bld, repo, NULL );
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_treebuilder_insert( NULL, tree_bld, "name-of-the-file.txt", &oid_blob, GIT_FILEMODE_BLOB );
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_treebuilder_write( &oid_tree, tree_bld );
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_tree_lookup( &tree_cmt, repo, &oid_tree );
-        if (rc) return next(iso, cb, rc);
+        if (rc) goto cleanup;
         rc = git_commit_create(
             &oid_commit, repo, "HEAD",
             sign, sign, /* same author and commiter */
             NULL, /* default UTF-8 encoding */
             *comment,
             tree_cmt, 0, NULL );
+        if (rc) goto cleanup;
 
+cleanup:
         git_tree_free( tree_cmt );
         git_treebuilder_free( tree_bld );
         git_blob_free( blob );
@@ -202,23 +207,20 @@ exit:
     return &data->ret;
 }
 
-void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
+void repo_fetch(const v8::FunctionCallbackInfo<v8::Value> &args){
     Isolate *iso = Isolate::GetCurrent();
     HandleScope scope(iso);
 
     Local<String> aName;
-    Local<String> aRefspec;
     Local<Function> cb;
 
     switch(args.Length()){
     case 1:
         aName = String::NewFromUtf8(iso, "origin");
-        aRefspec = String::NewFromUtf8(iso, "refs/heads/master:refs/heads/master");
         cb = Local<Function>::Cast(args[0]);
         break;
-    case 3:
+    case 2:
         aName = args[0]->ToString();
-        aRefspec = args[1]->ToString();
         cb = Local<Function>::Cast(args[2]);
         break;
     default:
@@ -226,7 +228,6 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
         return;
     }
     String::Utf8Value name(aName);
-    String::Utf8Value refspec(aRefspec);
 
     git_libgit2_init();
 
@@ -257,7 +258,7 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
 
     stats = git_remote_stats(remote);
     pthread_create(&worker, NULL, download, &data);
-    do {
+    do { // TODO: use v8 event?
         usleep(10000);
 
         if (stats->received_objects == stats->total_objects) {
@@ -283,11 +284,98 @@ void repo_pull(const v8::FunctionCallbackInfo<v8::Value> &args){
 
     git_remote_disconnect(remote);
 
+    // TODO repo.defaultSignature
     git_signature *sign;
     rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
     if (rc) goto cleanup;
     rc = git_remote_update_tips(remote, sign, NULL);
     if (rc) goto cleanup;
+
+cleanup:
+    git_remote_free(remote);
+    git_libgit2_shutdown();
+
+    return next(iso, cb, rc);
+}
+
+//lib/repository.js
+void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
+    Isolate *iso = Isolate::GetCurrent();
+    HandleScope scope(iso);
+
+    Local<String> aToName;
+    Local<String> aFromName;
+    Local<Function> cb;
+
+    switch(args.Length()){
+    case 1:
+        aToName = String::NewFromUtf8(iso, "master");
+        aFromName = String::NewFromUtf8(iso, "origin/master");
+        cb = Local<Function>::Cast(args[0]);
+        break;
+    case 3:
+        aToName = args[0]->ToString();
+        aFromName = args[1]->ToString();
+        cb = Local<Function>::Cast(args[2]);
+        break;
+    default:
+        iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Wrong number of arguments")));
+        return;
+    }
+    String::Utf8Value toName(aToName);
+    String::Utf8Value fromName(aFromName);
+
+    git_libgit2_init();
+    git_repository *repo = (git_repository*)self_get(args);
+
+    git_reference *toBranch, *fromBranch;
+    int rc;
+
+    rc = git_branch_lookup(&toBranch, repo, *toName, GIT_BRANCH_LOCAL);
+    if (rc) goto cleanup;
+    rc = git_branch_lookup(&fromBranch, repo, *fromName, GIT_BRANCH_LOCAL);
+    if (rc) goto cleanup;
+
+    git_commit *toCommit, *fromCommit, *baseCommit;
+    rc = git_commit_lookup(&toCommit, repo, git_reference_target(toBranch));
+    if (rc) goto cleanup;
+    rc = git_commit_lookup(&fromCommit, repo, git_reference_target(fromBranch));
+    if (rc) goto cleanup;
+    rc = git_merge_base(&baseCommit, repo, toCommit, fromCommit);
+    if (rc) goto cleanup;
+
+    if (0 == git_oid_cmp(baseCommit, fromCommit)){
+    }else if (0 == git_oid_cmp(baseCommit, toCommit)){
+    }else{
+    }
+
+
+// #################
+
+    git_object *obj = NULL;
+    rc = git_revparse_single(&obj, repo, "HEAD^{tree}");
+    if (rc) goto cleanup;
+
+    git_tree *tree = NULL;
+    rc = git_tree_lookup(&tree, repo, git_object_id(obj));
+    if (rc) goto cleanup;
+
+    git_diff *diff = NULL;
+    rc = git_diff_tree_to_workdir_with_index(&diff, repo, tree, NULL);
+    if (rc) goto cleanup;
+
+    size_t dlen = git_diff_num_deltas(diff);
+    printf("diff: %d\n", dlen);
+    if (dlen){
+//        git_merge_trees(, repo, git_merge_base(), , tree, NULL);
+    }
+
+cleanup:
+    git_tree_free(tree);
+    git_diff_free(diff);
+    git_libgit2_shutdown();
+
+    return next(iso, cb, rc);
 
 //https://github.com/libgit2/libgit2/issues/1555
 /*
@@ -297,7 +385,8 @@ A git pull is a fetch and merge
 - Connection to the remote
 - Download the pack, I'm guessing this is effectively a fetch,
 - then create a diff between the current head and the fetched content.
-- Do a merge if needed on the diff and create a patch, then apply the patch externally or with some other module.
+- Do a merge if needed on the diff and create a patch,
+- then apply the patch externally or with some other module.
 - Finally create another commit to represent this merge.
 - If a fast-forward is possible (Nothing needs to be merged because the commit your local branch is on is a direct ancestor of the commit you're pulling), then you can perhaps just repoint the index.
  */
@@ -314,12 +403,6 @@ repo.fetchAll({
 //git_index_has_conflicts //https://github.com/libgit2/libgit2/issues/1567
 //git_index_write_tree
 //git_commit_create
-
-cleanup:
-    git_remote_free(remote);
-    git_libgit2_shutdown();
-
-    return next(iso, cb, rc);
 }
 
 void repo_push(const v8::FunctionCallbackInfo<v8::Value> &args){
