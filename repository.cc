@@ -345,29 +345,57 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
     if (rc) goto cleanup;
 
     if (0 == git_oid_cmp(baseCommit, fromCommit)){
+        goto cleanup;
     }else if (0 == git_oid_cmp(baseCommit, toCommit)){
+        git_tree *tree;
+        rc = git_commit_tree(&tree, fromCommit);
+        if (rc) goto cleanup;
+        if (1 == git_branch_is_head(toBranch)){
+            git_checkout_options checkup_opts;
+            rc = git_checkout_init_options(&checkup_opts, GIT_CHECKOUT_OPTIONS_VERSION);
+            if (rc) goto cleanup;
+            checkup_opts.checkout_strategy = GIT_CHECKOUT_SAFE;
+            rc = git_checkout(repo, tree, &checkup_opts);
+            if (rc) goto cleanup;
+        }
+        git_buf *toSH, fromSH;
+        rc = git_object_short_id(&toSH, toBranch);
+        if (rc) goto cleanup;
+        git_object_short_id(&fromSH, fromBranch);
+        if (rc) goto cleanup;
+        char buf[40];
+        sprintf(buf, "Fast forward branch %s to branch %s", toSH->ptr, fromSH->ptr);
+        git_reference_set_target(&newFromCommit, toBranch, fromCommit, &sign, buf);
+        git_buf_free(toSH);
+        git_buf_free(fromSH);
     }else{
-    }
+        git_index *index;
+        rc = git_merge_commits(&index, repo, toCommit, fromCommit, NULL);
+        if (rc) goto cleanup;
+        if (git_index_has_conflict(index)){
+            // TODO: how to cleanup?
+            iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Index has conflict")));
+        }
+        rc = git_index_write(&index);
+        if (rc) goto cleanup;
+        git_oid *tree_oid;
+        rc = git_index_write_tree_to(tree_oid, index, repo);
+        if (rc) goto cleanup;
+        git_tree *tree;
+        git_tree_lookup(&tree, repo, tree_oid);
+        git_oid *oid;
 
+        git_buf *toSH, fromSH;
+        rc = git_object_short_id(&toSH, toBranch);
+        if (rc) goto cleanup;
+        git_object_short_id(&fromSH, fromBranch);
+        if (rc) goto cleanup;
+        char buf[40];
+        sprintf(buf, "Merged %s into %s", fromSH->ptr, toSH->ptr);
 
-// #################
-
-    git_object *obj = NULL;
-    rc = git_revparse_single(&obj, repo, "HEAD^{tree}");
-    if (rc) goto cleanup;
-
-    git_tree *tree = NULL;
-    rc = git_tree_lookup(&tree, repo, git_object_id(obj));
-    if (rc) goto cleanup;
-
-    git_diff *diff = NULL;
-    rc = git_diff_tree_to_workdir_with_index(&diff, repo, tree, NULL);
-    if (rc) goto cleanup;
-
-    size_t dlen = git_diff_num_deltas(diff);
-    printf("diff: %d\n", dlen);
-    if (dlen){
-//        git_merge_trees(, repo, git_merge_base(), , tree, NULL);
+        rc = git_commit_create(oid, repo, NULL, &sign, &sign, NULL, buf, oid, 2, {toCommit, fromCommit});
+        git_buf_free(toSH);
+        git_buf_free(fromSH);
     }
 
 cleanup:
@@ -376,33 +404,6 @@ cleanup:
     git_libgit2_shutdown();
 
     return next(iso, cb, rc);
-
-//https://github.com/libgit2/libgit2/issues/1555
-/*
-//https://github.com/nodegit/nodegit/issues/151
-A git pull is a fetch and merge
-
-- Connection to the remote
-- Download the pack, I'm guessing this is effectively a fetch,
-- then create a diff between the current head and the fetched content.
-- Do a merge if needed on the diff and create a patch,
-- then apply the patch externally or with some other module.
-- Finally create another commit to represent this merge.
-- If a fast-forward is possible (Nothing needs to be merged because the commit your local branch is on is a direct ancestor of the commit you're pulling), then you can perhaps just repoint the index.
- */
-/*
-repo.fetchAll({
-    credentials: function(url, userName) {
-        return NodeGit.Cred.sshKeyFromAgent(userName);
-    }
-}).then(function() {
-    repo.mergeBranches("master", "origin/master");
-});
- */
-//git_merge_trees
-//git_index_has_conflicts //https://github.com/libgit2/libgit2/issues/1567
-//git_index_write_tree
-//git_commit_create
 }
 
 void repo_push(const v8::FunctionCallbackInfo<v8::Value> &args){
