@@ -73,23 +73,23 @@ void repo_commit(const v8::FunctionCallbackInfo<v8::Value> &args){
 
         /* Get the index and write it to a tree */
         rc = git_repository_index(&index, repo);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         rc = git_index_read(index, 1);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         rc = git_index_add_bypath(index, *path);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         rc = git_index_write(index);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         rc = git_index_write_tree(&tree_id, index);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         rc = git_tree_lookup(&tree, repo, &tree_id);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
 
         /* Get HEAD as a commit object to use as the parent of the commit */
         rc = git_reference_name_to_id(&parent_id, repo, "HEAD");
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         rc = git_commit_lookup(&parent, repo, &parent_id);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
 
         /* Do the commit */
         rc = git_commit_create_v(
@@ -104,9 +104,9 @@ void repo_commit(const v8::FunctionCallbackInfo<v8::Value> &args){
             1,          /* Only one parent */
             parent      /* No need to make a list with create_v */
         );
-        if (rc) return goto cleanup;
+        if (rc) goto cleanup_1;
 
-cleanup:
+cleanup_1:
         git_commit_free( parent );
         git_tree_free( tree );
         git_index_free( index );
@@ -349,57 +349,66 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
     }else if (0 == git_oid_cmp(baseCommit, toCommit)){
         git_tree *tree;
         rc = git_commit_tree(&tree, fromCommit);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         if (1 == git_branch_is_head(toBranch)){
             git_checkout_options checkup_opts;
             rc = git_checkout_init_options(&checkup_opts, GIT_CHECKOUT_OPTIONS_VERSION);
-            if (rc) goto cleanup;
+            if (rc) goto cleanup_1;
             checkup_opts.checkout_strategy = GIT_CHECKOUT_SAFE;
             rc = git_checkout(repo, tree, &checkup_opts);
-            if (rc) goto cleanup;
+            if (rc) goto cleanup_1;
         }
         git_buf *toSH, fromSH;
         rc = git_object_short_id(&toSH, toBranch);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         git_object_short_id(&fromSH, fromBranch);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_1;
         char buf[40];
         sprintf(buf, "Fast forward branch %s to branch %s", toSH->ptr, fromSH->ptr);
         git_reference_set_target(&newFromCommit, toBranch, fromCommit, &sign, buf);
+
+cleanup_1:
+        git_tree_free(tree);
         git_buf_free(toSH);
         git_buf_free(fromSH);
     }else{
         git_index *index;
         rc = git_merge_commits(&index, repo, toCommit, fromCommit, NULL);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         if (git_index_has_conflict(index)){
-            // TODO: how to cleanup?
             iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Index has conflict")));
         }
         rc = git_index_write(&index);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         git_oid *tree_oid;
         rc = git_index_write_tree_to(tree_oid, index, repo);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         git_tree *tree;
         git_tree_lookup(&tree, repo, tree_oid);
         git_oid *oid;
 
         git_buf *toSH, fromSH;
         rc = git_object_short_id(&toSH, toBranch);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         git_object_short_id(&fromSH, fromBranch);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         char buf[40];
         sprintf(buf, "Merged %s into %s", fromSH->ptr, toSH->ptr);
 
         rc = git_commit_create(oid, repo, NULL, &sign, &sign, NULL, buf, oid, 2, {toCommit, fromCommit});
+
+cleanup_2:
+        git_index_free(index);
         git_buf_free(toSH);
         git_buf_free(fromSH);
     }
 
 cleanup:
-    git_tree_free(tree);
+    git_reference_free(toBranch);
+    git_reference_free(fromBranch);
+    git_commit_free(toCommit);
+    git_commit_free(fromCommit);
+    git_commit_free(baseCommit);
     git_diff_free(diff);
     git_libgit2_shutdown();
 
