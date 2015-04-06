@@ -119,31 +119,32 @@ cleanup_1:
         git_treebuilder * tree_bld;  /* tree builder */
 
         rc = git_blob_create_fromworkdir( &oid_blob, repo, *path);
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         rc = git_blob_lookup( &blob, repo, &oid_blob );
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         rc = git_treebuilder_new( &tree_bld, repo, NULL );
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         rc = git_treebuilder_insert( NULL, tree_bld, "name-of-the-file.txt", &oid_blob, GIT_FILEMODE_BLOB );
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         rc = git_treebuilder_write( &oid_tree, tree_bld );
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         rc = git_tree_lookup( &tree_cmt, repo, &oid_tree );
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
         rc = git_commit_create(
             &oid_commit, repo, "HEAD",
             sign, sign, /* same author and commiter */
             NULL, /* default UTF-8 encoding */
             *comment,
             tree_cmt, 0, NULL );
-        if (rc) goto cleanup;
+        if (rc) goto cleanup_2;
 
-cleanup:
+cleanup_2:
         git_tree_free( tree_cmt );
         git_treebuilder_free( tree_bld );
         git_blob_free( blob );
     }
 
+cleanup:
     git_signature_free(sign);
     git_libgit2_shutdown();
 
@@ -292,6 +293,7 @@ void repo_fetch(const v8::FunctionCallbackInfo<v8::Value> &args){
     if (rc) goto cleanup;
 
 cleanup:
+    git_signature_free(sign);
     git_remote_free(remote);
     git_libgit2_shutdown();
 
@@ -329,6 +331,7 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
     git_repository *repo = (git_repository*)self_get(args);
 
     git_reference *toBranch, *fromBranch;
+    git_commit *toCommit, *fromCommit;
     int rc;
 
     rc = git_branch_lookup(&toBranch, repo, *toName, GIT_BRANCH_LOCAL);
@@ -336,18 +339,21 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
     rc = git_branch_lookup(&fromBranch, repo, *fromName, GIT_BRANCH_LOCAL);
     if (rc) goto cleanup;
 
-    git_commit *toCommit, *fromCommit, *baseCommit;
     rc = git_commit_lookup(&toCommit, repo, git_reference_target(toBranch));
     if (rc) goto cleanup;
     rc = git_commit_lookup(&fromCommit, repo, git_reference_target(fromBranch));
     if (rc) goto cleanup;
-    rc = git_merge_base(&baseCommit, repo, toCommit, fromCommit);
+    git_oid baseOid;
+    rc = git_merge_base(&baseOid, repo, git_commit_id(toCommit), git_commit_id(fromCommit));
     if (rc) goto cleanup;
 
-    if (0 == git_oid_cmp(baseCommit, fromCommit)){
+    if (0 == git_oid_cmp(&baseOid, git_commit_id(fromCommit))){
         goto cleanup;
-    }else if (0 == git_oid_cmp(baseCommit, toCommit)){
+    }else if (0 == git_oid_cmp(&baseOid, git_commit_id(toCommit))){
         git_tree *tree;
+        git_signature *sign;
+        git_reference *newFromBranch;
+
         rc = git_commit_tree(&tree, fromCommit);
         if (rc) goto cleanup_1;
         if (1 == git_branch_is_head(toBranch)){
@@ -355,52 +361,61 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
             rc = git_checkout_init_options(&checkup_opts, GIT_CHECKOUT_OPTIONS_VERSION);
             if (rc) goto cleanup_1;
             checkup_opts.checkout_strategy = GIT_CHECKOUT_SAFE;
-            rc = git_checkout(repo, tree, &checkup_opts);
+            rc = git_checkout_tree(repo, (git_object*)tree, &checkup_opts);
             if (rc) goto cleanup_1;
         }
-        git_buf *toSH, fromSH;
-        rc = git_object_short_id(&toSH, toBranch);
+        git_buf toSH, fromSH;
+        rc = git_object_short_id(&toSH, (git_object*)toBranch);
         if (rc) goto cleanup_1;
-        git_object_short_id(&fromSH, fromBranch);
+        git_object_short_id(&fromSH, (git_object*)fromBranch);
         if (rc) goto cleanup_1;
         char buf[40];
-        sprintf(buf, "Fast forward branch %s to branch %s", toSH->ptr, fromSH->ptr);
-        git_reference_set_target(&newFromCommit, toBranch, fromCommit, &sign, buf);
+        sprintf(buf, "Fast forward branch %s to branch %s", toSH.ptr, fromSH.ptr);
+
+        rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
+        if (rc) goto cleanup_1;
+
+        git_reference_set_target(&newFromBranch, toBranch, git_commit_id(fromCommit), sign, buf);
 
 cleanup_1:
+        git_reference_free(newFromBranch);
+        git_signature_free(sign);
         git_tree_free(tree);
-        git_buf_free(toSH);
-        git_buf_free(fromSH);
     }else{
         git_index *index;
+        git_tree *tree;
+        git_signature *sign;
+        const git_commit *parents[] = {toCommit, fromCommit};
+        git_oid tree_oid;
+        git_oid oid;
+
         rc = git_merge_commits(&index, repo, toCommit, fromCommit, NULL);
         if (rc) goto cleanup_2;
-        if (git_index_has_conflict(index)){
+        if (git_index_has_conflicts(index)){
             iso->ThrowException(Exception::TypeError(String::NewFromUtf8(iso, "Index has conflict")));
         }
-        rc = git_index_write(&index);
+        rc = git_index_write(index);
         if (rc) goto cleanup_2;
-        git_oid *tree_oid;
-        rc = git_index_write_tree_to(tree_oid, index, repo);
+        rc = git_index_write_tree_to(&tree_oid, index, repo);
         if (rc) goto cleanup_2;
-        git_tree *tree;
-        git_tree_lookup(&tree, repo, tree_oid);
-        git_oid *oid;
+        git_tree_lookup(&tree, repo, &tree_oid);
 
-        git_buf *toSH, fromSH;
-        rc = git_object_short_id(&toSH, toBranch);
+        git_buf toSH, fromSH;
+        rc = git_object_short_id(&toSH, (git_object*)toBranch);
         if (rc) goto cleanup_2;
-        git_object_short_id(&fromSH, fromBranch);
+        git_object_short_id(&fromSH, (git_object*)fromBranch);
         if (rc) goto cleanup_2;
         char buf[40];
-        sprintf(buf, "Merged %s into %s", fromSH->ptr, toSH->ptr);
+        sprintf(buf, "Merged %s into %s", fromSH.ptr, toSH.ptr);
 
-        rc = git_commit_create(oid, repo, NULL, &sign, &sign, NULL, buf, oid, 2, {toCommit, fromCommit});
+        rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
+        if (rc) goto cleanup_2;
+        rc = git_commit_create(&oid, repo, NULL, sign, sign, NULL, buf, tree, 2, parents);
 
 cleanup_2:
+        git_signature_free(sign);
+        git_tree_free(tree);
         git_index_free(index);
-        git_buf_free(toSH);
-        git_buf_free(fromSH);
     }
 
 cleanup:
@@ -408,8 +423,6 @@ cleanup:
     git_reference_free(fromBranch);
     git_commit_free(toCommit);
     git_commit_free(fromCommit);
-    git_commit_free(baseCommit);
-    git_diff_free(diff);
     git_libgit2_shutdown();
 
     return next(iso, cb, rc);
