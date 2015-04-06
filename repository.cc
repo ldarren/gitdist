@@ -300,6 +300,20 @@ cleanup:
     return next(iso, cb, rc);
 }
 
+int get_reference(git_reference **out, git_repository *repo, const char *name){
+    int rc;
+    git_reference *ref;
+    rc = git_reference_dwim(&ref, repo, name);
+    if (rc) return rc;
+    if (GIT_REF_SYMBOLIC == git_reference_type(ref)){
+        rc = git_reference_resolve(out, ref);
+        git_reference_free(ref);
+        return rc;
+    }
+    *out = ref;
+    return 0;
+}
+
 //lib/repository.js
 void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
     Isolate *iso = Isolate::GetCurrent();
@@ -334,9 +348,11 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
     git_commit *toCommit, *fromCommit;
     int rc;
 
-    rc = git_branch_lookup(&toBranch, repo, *toName, GIT_BRANCH_LOCAL);
+    //rc = git_branch_lookup(&toBranch, repo, *toName, GIT_BRANCH_LOCAL);
+    rc = get_reference(&toBranch, repo, *toName);
     if (rc) goto cleanup;
-    rc = git_branch_lookup(&fromBranch, repo, *fromName, GIT_BRANCH_LOCAL);
+    //rc = git_branch_lookup(&fromBranch, repo, *fromName, GIT_BRANCH_REMOTE);
+    rc = get_reference(&fromBranch, repo, *fromName);
     if (rc) goto cleanup;
 
     rc = git_commit_lookup(&toCommit, repo, git_reference_target(toBranch));
@@ -350,9 +366,9 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
     if (0 == git_oid_cmp(&baseOid, git_commit_id(fromCommit))){
         goto cleanup;
     }else if (0 == git_oid_cmp(&baseOid, git_commit_id(toCommit))){
-        git_tree *tree;
-        git_signature *sign;
-        git_reference *newFromBranch;
+        git_tree *tree = NULL;
+        git_signature *sign = NULL;
+        git_reference *newFromBranch = NULL;
 
         rc = git_commit_tree(&tree, fromCommit);
         if (rc) goto cleanup_1;
@@ -364,13 +380,9 @@ void repo_merge(const v8::FunctionCallbackInfo<v8::Value> &args){
             rc = git_checkout_tree(repo, (git_object*)tree, &checkup_opts);
             if (rc) goto cleanup_1;
         }
-        git_buf toSH, fromSH;
-        rc = git_object_short_id(&toSH, (git_object*)toBranch);
-        if (rc) goto cleanup_1;
-        git_object_short_id(&fromSH, (git_object*)fromBranch);
-        if (rc) goto cleanup_1;
-        char buf[40];
-        sprintf(buf, "Fast forward branch %s to branch %s", toSH.ptr, fromSH.ptr);
+
+        char buf[64];
+        sprintf(buf, "Fast forward branch %s to branch %s", *toName, *fromName);
 
         rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
         if (rc) goto cleanup_1;
@@ -400,13 +412,8 @@ cleanup_1:
         if (rc) goto cleanup_2;
         git_tree_lookup(&tree, repo, &tree_oid);
 
-        git_buf toSH, fromSH;
-        rc = git_object_short_id(&toSH, (git_object*)toBranch);
-        if (rc) goto cleanup_2;
-        git_object_short_id(&fromSH, (git_object*)fromBranch);
-        if (rc) goto cleanup_2;
-        char buf[40];
-        sprintf(buf, "Merged %s into %s", fromSH.ptr, toSH.ptr);
+        char buf[64];
+        sprintf(buf, "Merged %s into %s", *fromName, *toName);
 
         rc = git_signature_now(&sign, "ldarren", "ldarren@gmail.com");
         if (rc) goto cleanup_2;
